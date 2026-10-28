@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<title>Earthquake Calculator</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --ink:#1d2433; --muted:#667085; --line:#d7dce3; --bg:#f6f7f9; --card:#fff; --p:#c62828; --s:#1565c0; --acc:#0f766e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { max-width:1100px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:22px; margin:0 0 2px; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px 18px; margin-bottom:16px; }
+  section h2 { font-size:17px; margin:0 0 10px; }
+  section h2 .n { display:inline-block; width:24px; height:24px; border-radius:50%; background:var(--acc); color:#fff; text-align:center; font-size:14px; line-height:24px; margin-right:8px; }
+  .hint { color:var(--muted); font-size:13px; margin:0 0 10px; }
+  select, button, input { font:inherit; padding:7px 10px; border-radius:6px; border:1px solid var(--line); background:#fff; }
+  input[type=checkbox] { padding:0; }
+  button { cursor:pointer; }
+  button.primary { background:var(--acc); color:#fff; border-color:var(--acc); }
+  button:disabled { opacity:.5; cursor:default; }
+  button.small { font-size:13px; padding:3px 8px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .hidden { display:none; }
+  details summary { cursor:pointer; color:var(--acc); font-size:14px; margin-top:10px; }
+  .search { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; margin:10px 0; }
+  .search label { font-size:12px; color:var(--muted); display:flex; flex-direction:column; }
+  .tablewrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th, td { border-bottom:1px solid var(--line); padding:5px 8px; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  td.bad { color:#b42318; font-weight:600; }
+  .trace { border:1px solid var(--line); border-radius:6px; margin-bottom:10px; }
+  .trace-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 10px; border-bottom:1px solid var(--line); font-size:14px; background:#fafbfc; border-radius:6px 6px 0 0; }
+  .p { color:var(--p); font-weight:600; } .s { color:var(--s); font-weight:600; }
+  #map { height:440px; border-radius:6px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:12px; }
+  .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
+  .card .k { font-size:12px; color:var(--muted); }
+  .card .v { font-size:24px; font-weight:650; }
+  .card .d { font-size:12px; color:var(--muted); }
+  .work { background:#f8fafc; border-left:3px solid var(--acc); padding:10px 14px; font-family:ui-monospace,Menlo,monospace; font-size:13px; white-space:pre-wrap; overflow-x:auto; }
+  .status { color:var(--muted); font-size:14px; }
+  .error { color:#b42318; }
+  .ok { color:var(--acc); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Earthquake Calculator</h1>
+  <p class="sub">Choose an earthquake → the app downloads real seismograms → picks P and S → locates the epicentre → computes the magnitude. You check the picks and correct them.</p>
+
+  <section>
+    <h2><span class="n">1</span>Choose an earthquake</h2>
+    <div class="row">
+      <select id="ev" style="min-width:300px"><option>Loading…</option></select>
+      <button class="primary" id="go" disabled>Get seismograms</button>
+    </div>
+    <p id="status" class="status"></p>
+    <details>
+      <summary>Find another earthquake in the USGS catalogue</summary>
+      <div class="search">
+        <label>From<input type="date" id="sStart" value="2010-01-01"></label>
+        <label>To<input type="date" id="sEnd"></label>
+        <label>Min. magnitude<input type="number" id="sMag" value="6" step="0.1"></label>
+        <label>Centre lat.<input type="number" id="sLat" value="15"></label>
+        <label>Centre lon.<input type="number" id="sLon" value="101"></label>
+        <label>Radius (deg)<input type="number" id="sRad" value="15"></label>
+      </div>
+      <button id="sGo">Search</button>
+      <div class="tablewrap"><table id="sRes"></table></div>
+    </details>
+  </section>
+
+  <div id="results" class="hidden">
+    <section>
+      <h2><span class="n">2</span>Seismograms and automatic picks</h2>
+      <p class="hint">Real broadband records from EarthScope (IRIS), converted to ground displacement in µm (0.05–2 Hz). Black = vertical (Z), blue = radial (R).
+        The app picked <span class="p">P</span> and <span class="s">S</span> automatically. <b>If a pick looks wrong, drag its line</b>; everything below updates.
+        Untick a station to leave it out.</p>
+      <label class="hint"><input type="checkbox" id="showTheory"> Show iasp91 predicted arrivals (from the catalogue location) to check the picks</label>
+      <div id="traces" style="margin-top:10px"></div>
+    </section>
+
+    <section>
+      <h2><span class="n">3</span>Distance from S − P</h2>
+      <p class="hint">Each S − P time gives the distance to the earthquake, read from the iasp91 travel-time table at the catalogue depth (TravelTimes sheet).</p>
+      <div class="tablewrap"><table id="sptable"></table></div>
+    </section>
+
+    <section>
+      <h2><span class="n">4</span>Epicentre</h2>
+      <p class="hint">A circle of radius Δ around each station. The app finds the point that best fits all the circles (★). The grey ◆ is the catalogue epicentre, for comparison.</p>
+      <div class="cards" id="loccards"></div>
+      <div id="map"></div>
+    </section>
+
+    <section>
+      <h2><span class="n">5</span>Magnitude</h2>
+      <p class="hint">Formulas from the lecture. mb from the largest P-wave swing on Z (before S, at most 20 s), Ms from the largest swing after S on R. Δ from your epicentre.
+        Both formulas are defined for 20° &lt; Δ &lt; 160°; closer stations give rough values, as in the worksheet. Red = more than 1 unit from the median (check the picks or the instrument).</p>
+      <div class="cards" id="magcards"></div>
+      <div class="tablewrap"><table id="magtable"></table></div>
+      <p class="hint" style="margin-top:12px">Working for station <select id="workSta"></select></p>
+      <div class="work" id="work"></div>
+    </section>
+
+    <section>
+      <h2><span class="n">6</span>Save your result</h2>
+      <div class="row">
+        <input id="student" placeholder="Your name and student ID" style="min-width:280px">
+        <button class="primary" id="save">Save to the class sheet</button>
+        <span id="saveMsg" class="status"></span>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+// =================================================================== server calls
+const server = (fn, ...args) => new Promise((resolve, reject) =>
+  google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](...args));
+
+// =================================================================== miniSEED (v2) decoder
+// Returns { "NET.STA.LOC.CHA": { start: ms since 1970, rate: samples/s, data: Float64Array } }
+function decodeMiniSeed(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const recs = {};
+  let off = 0;
+  while (off + 64 <= bytes.length) {
+    let le = false, year = dv.getUint16(off + 20, false);
+    if (year < 1900 || year > 2100) { le = true; year = dv.getUint16(off + 20, true); }
+    const u16 = o => dv.getUint16(off + o, le), i16 = o => dv.getInt16(off + o, le);
+    const str = (o, n) => String.fromCharCode(...bytes.subarray(off + o, off + o + n)).trim();
+    const id = [str(18, 2), str(8, 5), str(13, 2), str(15, 3)].join('.');
+    const nsamp = u16(30), fac = i16(32), mul = i16(34), act = bytes[off + 36];
+    const tcorr = dv.getInt32(off + 40, le), dataOff = u16(44);
+    let enc = 11, wordLE = le, recLen = 4096, b = u16(46);
+    for (let guard = 0; b && guard < 10; guard++) {      // walk the blockettes, looking for 1000
+      if (dv.getUint16(off + b, le) === 1000) {
+        enc = bytes[off + b + 4]; wordLE = bytes[off + b + 5] === 0; recLen = 1 << bytes[off + b + 6];
+      }
+      b = dv.getUint16(off + b + 2, le);
+    }
+    const rate = fac > 0 && mul > 0 ? fac * mul : fac > 0 && mul < 0 ? -fac / mul
+               : fac < 0 && mul > 0 ? -mul / fac : fac < 0 && mul < 0 ? 1 / (fac * mul) : 0;
+    let start = Date.UTC(year, 0, 1, bytes[off + 24], bytes[off + 25], bytes[off + 26]) + (u16(22) - 1) * 86400e3 + u16(28) / 10;
+    if (!(act & 0x02)) start += tcorr / 10;              // time correction not yet applied
+    if (nsamp > 0 && rate > 0) {
+      const data = decodeData(dv, off + dataOff, off + recLen, enc, nsamp, wordLE);
+      (recs[id] = recs[id] || []).push({ start, rate, data });
+    }
+    off += recLen;
+  }
+  const out = {};
+  for (const [id, list] of Object.entries(recs)) {      // join the records, filling gaps with the last value
+    list.sort((a, b) => a.start - b.start);
+    const rate = list[0].rate, start = list[0].start, last = list[list.length - 1];
+    const n = Math.round((last.start - start) / 1000 * rate) + last.data.length;
+    const data = new Float64Array(n);
+    let filled = 0;
+    for (const r of list) {
+      const i0 = Math.round((r.start - start) / 1000 * rate);
+      for (let k = filled; k < i0 && k < n; k++) data[k] = filled ? data[filled - 1] : r.data[0];
+      for (let k = 0; k < r.data.length && i0 + k < n; k++) data[i0 + k] = r.data[k];
+      filled = Math.max(filled, i0 + r.data.length);
+    }
+    out[id] = { start, rate, data };
+  }
+  return out;
+}
+
+function decodeData(dv, start, end, enc, n, le) {
+  const out = new Float64Array(n);
+  if (enc === 10 || enc === 11) return steim(dv, start, end, n, le, enc === 11);
+  const size = { 1: 2, 3: 4, 4: 4, 5: 8 }[enc];
+  if (!size) throw new Error('Unsupported miniSEED encoding ' + enc);
+  for (let i = 0; i < n && start + (i + 1) * size <= end; i++) {
+    const p = start + i * size;
+    out[i] = enc === 1 ? dv.getInt16(p, le) : enc === 3 ? dv.getInt32(p, le) : enc === 4 ? dv.getFloat32(p, le) : dv.getFloat64(p, le);
+  }
+  return out;
+}
+
+// Steim-1 and Steim-2 compression: 64-byte frames of differences between samples.
+function steim(dv, start, end, n, le, v2) {
+  const diffs = [];
+  let x0 = 0;
+  const unpack = (word, bits, count) => {
+    for (let i = 0; i < count; i++) {
+      let v = (word >>> ((count - 1 - i) * bits)) & ((1 << bits) - 1);
+      if (v & (1 << (bits - 1))) v -= 1 << bits;
+      diffs.push(v);
+    }
+  };
+  for (let f = start; f + 64 <= end && diffs.length < n; f += 64) {
+    const ctrl = dv.getUint32(f, le);
+    for (let w = 1; w < 16; w++) {
+      const c = (ctrl >>> (30 - 2 * w)) & 3, p = f + 4 * w;
+      if (f === start && w === 1) { x0 = dv.getInt32(p, le); continue; }
+      if (f === start && w === 2) continue;               // last sample (check value)
+      if (c === 0) continue;
+      if (c === 1) { for (let i = 0; i < 4; i++) diffs.push(dv.getInt8(p + i)); continue; }
+      if (!v2) {
+        if (c === 2) diffs.push(dv.getInt16(p, le), dv.getInt16(p + 2, le)); else diffs.push(dv.getInt32(p, le));
+        continue;
+      }
+      const word = dv.getUint32(p, le), dnib = word >>> 30;
+      if (c === 2) { if (dnib === 1) unpack(word, 30, 1); else if (dnib === 2) unpack(word, 15, 2); else if (dnib === 3) unpack(word, 10, 3); }
+      else { if (dnib === 0) unpack(word, 6, 5); else if (dnib === 1) unpack(word, 5, 6); else if (dnib === 2) unpack(word, 4, 7); }
+    }
+  }
+  const out = new Float64Array(n);
+  out[0] = x0;
+  for (let i = 1; i < n; i++) out[i] = out[i - 1] + (diffs[i] || 0);
+  return out;
+}
+
+// =================================================================== signal processing
+function fft(re, im, inverse) {                          // in place, length = power of 2
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = 2 * Math.PI / len * (inverse ? 1 : -1), wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k, b = a + len / 2;
+        const tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+  if (inverse) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+// Demean, detrend, taper, then band-pass with cosine edges [f1 f2 f3 f4] (Hz) in the frequency
+// domain. With integrate = true the output is the time integral (velocity → displacement).
+function bandpass(x, rate, [f1, f2, f3, f4], integrate) {
+  const n = x.length;
+  let sx = 0, sxy = 0, sy = 0, sxx = 0;
+  for (let i = 0; i < n; i++) { sx += i; sy += x[i]; sxy += i * x[i]; sxx += i * i; }
+  const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx), icpt = (sy - slope * sx) / n;
+  let N = 1; while (N < n * 1.2) N <<= 1;
+  const re = new Float64Array(N), im = new Float64Array(N), m = Math.floor(n * 0.05);
+  for (let i = 0; i < n; i++) {
+    const w = i < m ? 0.5 - 0.5 * Math.cos(Math.PI * i / m) : i >= n - m ? 0.5 - 0.5 * Math.cos(Math.PI * (n - 1 - i) / m) : 1;
+    re[i] = (x[i] - icpt - slope * i) * w;
+  }
+  fft(re, im, false);
+  for (let k = 0; k < N; k++) {
+    const f = (k <= N / 2 ? k : N - k) * rate / N;
+    const g = f <= f1 || f >= f4 ? 0 : f < f2 ? 0.5 - 0.5 * Math.cos(Math.PI * (f - f1) / (f2 - f1))
+            : f > f3 ? 0.5 + 0.5 * Math.cos(Math.PI * (f - f3) / (f4 - f3)) : 1;
+    if (integrate && g > 0) {                              // divide by iω
+      const w = 2 * Math.PI * f * (k <= N / 2 ? 1 : -1), a = re[k], b = im[k];
+      re[k] = g * b / w; im[k] = -g * a / w;
+    } else { re[k] *= g; im[k] *= g; }
+  }
+  fft(re, im, true);
+  return re.subarray(0, n);
+}
+
+// =================================================================== picking
+function staLta(x, rate, sta, lta) {
+  const ns = Math.round(sta * rate), nl = Math.round(lta * rate), c = new Float64Array(x.length + 1);
+  for (let i = 0; i < x.length; i++) c[i + 1] = c[i] + x[i] * x[i];
+  const r = new Float64Array(x.length);
+  for (let i = nl; i < x.length; i++) r[i] = ((c[i] - c[i - ns]) / ns) / ((c[i - ns] - c[i - nl]) / (nl - ns) + 1e-30);
+  return r;
+}
+function aicPick(x, i0, i1) {                            // onset = minimum of the Akaike criterion
+  i0 = Math.max(0, i0); i1 = Math.min(x.length, i1);
+  const n = i1 - i0, s = new Float64Array(n + 1), s2 = new Float64Array(n + 1);
+  for (let k = 0; k < n; k++) { s[k + 1] = s[k] + x[i0 + k]; s2[k + 1] = s2[k] + x[i0 + k] ** 2; }
+  const v = (a, b) => { const m = b - a, mu = (s[b] - s[a]) / m; return (s2[b] - s2[a]) / m - mu * mu + 1e-30; };
+  let best = Infinity, at = i0;
+  for (let k = 5; k < n - 5; k++) {
+    const aic = k * Math.log(v(0, k)) + (n - k - 1) * Math.log(v(k, n));
+    if (aic < best) { best = aic; at = i0 + k; }
+  }
+  return at;
+}
+// P: first STA/LTA above 20 % of the strongest onset after the origin (a fixed threshold fires on noise).
+function pickP(t, z, rate) {
+  const r = staLta(z, rate, 1, 10);
+  let max = 0; for (let i = 0; i < r.length; i++) { if (t[i] <= 0) r[i] = 0; if (r[i] > max) max = r[i]; }
+  const thr = Math.max(8, 0.2 * max);
+  const i = r.findIndex(v => v > thr);
+  if (i < 0) return null;
+  return t[aicPick(z, i - Math.round(5 * rate), i + Math.round(3 * rate))];
+}
+// S: on the horizontal envelope, where S can arrive given P and the origin time (tS ≈ 1.55–1.95 tP).
+function pickS(t, h, rate, tP) {
+  if (tP == null) return null;
+  const r = staLta(h, rate, 1, 5);
+  let best = -1, at = -1;
+  const from = Math.max(1.55 * tP, tP + 1), to = Math.max(1.95 * tP, tP + 4);
+  for (let i = 0; i < t.length; i++) if (t[i] > from && t[i] < to && r[i] > best) { best = r[i]; at = i; }
+  if (at < 0) return null;
+  const iP = t.findIndex(v => v > tP + 0.5);               // never look for S before P
+  return t[aicPick(h, Math.max(iP, at - Math.round(6 * rate)), at + Math.round(2 * rate))];
+}
+
+// =================================================================== travel times, location, magnitudes
+const R2D = 180 / Math.PI, D2R = Math.PI / 180;
+function interp(x, xs, ys) {
+  if (x < xs[0]) return NaN;
+  for (let i = 1; i < xs.length; i++) if (x <= xs[i]) return ys[i - 1] + (x - xs[i - 1]) / (xs[i] - xs[i - 1]) * (ys[i] - ys[i - 1]);
+  return NaN;
+}
+function ttAtDepth(tt, h) {                              // interpolate the table between depths
+  const d = tt.depths;
+  let j = d.findIndex(x => x >= h); if (j < 0) j = d.length - 1; if (j === 0) j = 1;
+  const f = Math.max(0, Math.min(1, (h - d[j - 1]) / (d[j] - d[j - 1])));
+  const col = (r, k) => r[1 + 2 * (j - 1) + k] + f * (r[1 + 2 * j + k] - r[1 + 2 * (j - 1) + k]);
+  return { delta: tt.rows.map(r => r[0]), tp: tt.rows.map(r => col(r, 0)), sp: tt.rows.map(r => col(r, 1)) };
+}
+function gcDeg(la1, lo1, la2, lo2) {
+  const a = Math.sin((la2 - la1) * D2R / 2) ** 2 + Math.cos(la1 * D2R) * Math.cos(la2 * D2R) * Math.sin((lo2 - lo1) * D2R / 2) ** 2;
+  return 2 * Math.asin(Math.min(1, Math.sqrt(a))) * R2D;
+}
+function azimuth(la1, lo1, la2, lo2) {
+  const y = Math.sin((lo2 - lo1) * D2R) * Math.cos(la2 * D2R);
+  const x = Math.cos(la1 * D2R) * Math.sin(la2 * D2R) - Math.sin(la1 * D2R) * Math.cos(la2 * D2R) * Math.cos((lo2 - lo1) * D2R);
+  return (Math.atan2(y, x) * R2D + 360) % 360;
+}
+function locate(stations, T) {
+  const use = stations.filter(s => s.use && isFinite(s.dsp));
+  if (use.length < 3) return null;
+  const misfit = (la, lo) => Math.sqrt(use.reduce((a, s) => a + (gcDeg(la, lo, s.lat, s.lon) - s.dsp) ** 2, 0) / use.length);
+  const lat0 = use.reduce((a, s) => a + s.lat, 0) / use.length, lon0 = use.reduce((a, s) => a + s.lon, 0) / use.length;
+  let best = [Infinity, 0, 0];
+  for (let la = Math.max(-89, lat0 - 25); la <= Math.min(89, lat0 + 25); la += 0.25)
+    for (let lo = lon0 - 25; lo <= lon0 + 25; lo += 0.25) { const m = misfit(la, lo); if (m < best[0]) best = [m, la, lo]; }
+  for (const step of [0.05, 0.01]) {
+    const [, la0, lo0] = best;
+    for (let la = la0 - 0.3; la <= la0 + 0.3; la += step)
+      for (let lo = lo0 - 0.3; lo <= lo0 + 0.3; lo += step) { const m = misfit(la, lo); if (m < best[0]) best = [m, la, lo]; }
+  }
+  const [rms, lat, lon] = best;
+  const t0 = use.reduce((a, s) => a + s.tP - interp(gcDeg(lat, lon, s.lat, s.lon), T.delta, T.tp), 0) / use.length;
+  return { lat, lon, rms, t0, n: use.length };
+}
+function biggestSwing(t, x, t1, t2) {                    // largest peak-to-adjacent-trough swing
+  const ext = [];
+  for (let i = 1; i < t.length - 1; i++) {
+    if (t[i] < t1 || t[i] > t2) continue;
+    if ((x[i] - x[i - 1]) * (x[i + 1] - x[i]) < 0) ext.push(i);
+  }
+  let best = null;
+  for (let k = 0; k < ext.length - 1; k++) {
+    const h = Math.abs(x[ext[k + 1]] - x[ext[k]]);
+    if (!best || h > best.h) best = { h, i: ext[k], j: ext[k + 1] };
+  }
+  if (!best) return null;
+  return { A: best.h / 2, T: 2 * Math.abs(t[best.j] - t[best.i]), ta: t[best.i], va: x[best.i], tb: t[best.j], vb: x[best.j] };
+}
+const log10 = Math.log10, f2 = v => isFinite(v) ? v.toFixed(2) : '–', f1 = v => isFinite(v) ? v.toFixed(1) : '–';
+const median = a => { if (!a.length) return NaN; const b = [...a].sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+
+// =================================================================== turn a download into a station
+function processStation(st, originMs) {
+  const bin = atob(st.mseed), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const traces = decodeMiniSeed(bytes);
+  const ch = st.channels.map(c => ({ ...c, tr: traces[`${st.net}.${st.sta}.${st.loc}.${c.cha}`] }));
+  if (ch.some(c => !c.tr)) throw new Error('missing component');
+  const rate = ch[0].tr.rate;
+  if (ch.some(c => Math.abs(c.tr.rate - rate) > 1e-6)) throw new Error('components have different sample rates');
+  // Common time span for the three components
+  const t0 = Math.max(...ch.map(c => c.tr.start)), t1 = Math.min(...ch.map(c => c.tr.start + c.tr.data.length / rate * 1000));
+  const n = Math.floor((t1 - t0) / 1000 * rate);
+  if (n < rate * 60) throw new Error('record too short');
+  const cut = c => { const i0 = Math.round((t0 - c.tr.start) / 1000 * rate); return c.tr.data.subarray(i0, i0 + n); };
+  // Clipped: the digitiser hit its limit (stations close to a big earthquake), so the trace is flat-topped,
+  // with many samples at exactly the largest value. Digitisers differ in range, so test for the flat top.
+  const clipped = ch.some(c => {
+    const x = cut(c); let m = 0, k = 0;
+    for (const v of x) m = Math.max(m, Math.abs(v));
+    for (const v of x) if (Math.abs(v) === m) k++;
+    return m > 1e5 && k >= 5;
+  });
+  const [z, h1, h2] = ch.map(c => cut(c).map(v => v / c.scale));  // ground velocity, m/s
+  const a1 = ch[1].az * D2R, a2 = ch[2].az * D2R;
+  const north = h1.map((v, i) => v * Math.cos(a1) + h2[i] * Math.cos(a2));
+  const east = h1.map((v, i) => v * Math.sin(a1) + h2[i] * Math.sin(a2));
+  const t = Float64Array.from({ length: n }, (_, i) => (t0 - originMs) / 1000 + i / rate);
+
+  // Picks on velocity, 1–5 Hz
+  const nyq = rate / 2, pb = [0.7, 1, Math.min(5, nyq * 0.8), Math.min(6, nyq * 0.9)];
+  const vz = bandpass(z, rate, pb), vn = bandpass(north, rate, pb), ve = bandpass(east, rate, pb);
+  const tP = pickP(t, vz, rate);
+  const tS = pickS(t, vn.map((v, i) => Math.sqrt(v * v + ve[i] * ve[i])), rate, tP);
+  if (tP == null || tS == null) throw new Error('could not pick P and S');
+
+  // Displacement in µm, 0.05–2 Hz, kept at 10 samples/s for plotting and measuring
+  const db = [0.03, 0.05, 2, Math.min(3, nyq * 0.9)], step = Math.max(1, Math.round(rate / 10));
+  const dec = a => Float64Array.from({ length: Math.floor(n / step) }, (_, i) => a[i * step] * 1e6);
+  const note = clipped ? 'clipped record: left out' : tS - tP < 1 ? 'picks failed: drag the lines, then tick' : '';
+  return {
+    net: st.net, sta: st.sta, lat: st.lat, lon: st.lon, use: !note, note, tP, tS, auto: { tP, tS },
+    trace: { t: dec(t).map(v => v / 1e6), z: dec(bandpass(z, rate, db, true)), n: dec(bandpass(north, rate, db, true)), e: dec(bandpass(east, rate, db, true)) },
+  };
+}
+
+// =================================================================== app state and drawing
+let INIT, EV, T, ST = [], LOC = null, map = null, layers = [];
+
+function recompute() {
+  ST.forEach(s => { s.sp = s.tS - s.tP; s.dsp = interp(s.sp, T.sp, T.delta); });
+  LOC = locate(ST, T);
+  ST.forEach(s => {
+    s.dloc = LOC ? gcDeg(LOC.lat, LOC.lon, s.lat, s.lon) : NaN;
+    s.pw = s.rw = null; s.mb = s.Ms = NaN; s.r = null;
+    if (!LOC) return;
+    const baz = azimuth(s.lat, s.lon, LOC.lat, LOC.lon) * D2R;     // R = −N cos(baz) − E sin(baz)
+    s.r = s.trace.n.map((v, i) => -v * Math.cos(baz) - s.trace.e[i] * Math.sin(baz));
+    s.pw = biggestSwing(s.trace.t, s.trace.z, s.tP, Math.min(s.tS, s.tP + 20));
+    s.rw = biggestSwing(s.trace.t, s.r, s.tS, Infinity);
+    if (s.pw) s.mb = log10(s.pw.A) - log10(s.pw.T) + 0.01 * s.dloc + 5.9;
+    if (s.rw) s.Ms = log10(s.rw.A) + 1.66 * log10(s.dloc) + 2.0;
+  });
+  drawTable(); drawMap(); drawMags(); ST.forEach(drawTrace);
+}
+
+function buildTraces() {
+  const box = document.getElementById('traces');
+  box.innerHTML = '';
+  ST.forEach((s, i) => {
+    const d = document.createElement('div');
+    d.className = 'trace';
+    d.innerHTML = `<div class="trace-head"><span><label><input type="checkbox" ${s.use ? 'checked' : ''}> <b>${s.net}.${s.sta}</b></label>
+      &nbsp; <span class="p" id="pl${i}"></span> · <span class="s" id="sl${i}"></span> · S − P <b id="sp${i}"></b>
+      ${s.note ? `&nbsp; <span class="error">${s.note}</span>` : ''}</span>
+      <button class="small">Reset picks</button></div><div id="plot${i}" style="height:230px"></div>`;
+    d.querySelector('input').onchange = e => { s.use = e.target.checked; recompute(); };
+    d.querySelector('button').onclick = () => { s.tP = s.auto.tP; s.tS = s.auto.tS; recompute(); };
+    box.appendChild(d);
+  });
+}
+
+function drawTrace(s) {
+  const i = ST.indexOf(s);
+  document.getElementById('pl' + i).textContent = `P ${f1(s.tP)} s`;
+  document.getElementById('sl' + i).textContent = `S ${f1(s.tS)} s`;
+  document.getElementById('sp' + i).textContent = f1(s.sp) + ' s';
+  const r = s.r || s.trace.n, t = Array.from(s.trace.t);
+  let zMax = 0, rMax = 0;
+  for (let k = 0; k < t.length; k++) { zMax = Math.max(zMax, Math.abs(s.trace.z[k])); rMax = Math.max(rMax, Math.abs(r[k])); }
+  const data = [
+    { x: t, y: Array.from(s.trace.z, v => v / zMax + 1.2), mode: 'lines', line: { color: '#111', width: 1 }, hoverinfo: 'skip' },
+    { x: t, y: Array.from(r, v => v / rMax - 1.2), mode: 'lines', line: { color: '#1f4e79', width: 1 }, hoverinfo: 'skip' },
+  ];
+  const mark = (w, off, max, col) => w && data.push({ x: [w.ta, w.tb], y: [w.va / max + off, w.vb / max + off], mode: 'markers',
+    marker: { color: col, size: 7, symbol: 'circle-open', line: { width: 2 } }, hoverinfo: 'skip' });
+  mark(s.pw, 1.2, zMax, '#c62828'); mark(s.rw, -1.2, rMax, '#1565c0');
+  const vline = (x, color, dash, editable) => ({ type: 'line', x0: x, x1: x, y0: 0, y1: 1, yref: 'paper', line: { color, width: 2, dash }, editable });
+  const shapes = [vline(s.tP, '#c62828', 'solid', true), vline(s.tS, '#1565c0', 'solid', true)];
+  if (document.getElementById('showTheory').checked) {
+    const d = gcDeg(EV.lat, EV.lon, s.lat, s.lon), tp = interp(d, T.delta, T.tp), sp = interp(d, T.delta, T.sp);
+    shapes.push(vline(tp, '#c62828', 'dot', false), vline(tp + sp, '#1565c0', 'dot', false));
+  }
+  const layout = {
+    margin: { l: 30, r: 10, t: 6, b: 34 }, showlegend: false, shapes, dragmode: false,
+    xaxis: { title: { text: 'time after origin (s)', font: { size: 11 } }, range: [-10, Math.min(t[t.length - 1], s.tS + 1.5 * (s.tS - s.tP) + 60)], gridcolor: '#eee' },
+    yaxis: { showticklabels: false, range: [-2.4, 2.4], zeroline: false, showgrid: false },
+    annotations: [
+      { x: s.tP, y: 1, yref: 'paper', text: 'P', showarrow: false, font: { color: '#c62828', size: 13 }, xanchor: 'left', yanchor: 'top' },
+      { x: s.tS, y: 1, yref: 'paper', text: 'S', showarrow: false, font: { color: '#1565c0', size: 13 }, xanchor: 'left', yanchor: 'top' },
+      { x: 0, xref: 'paper', y: 2.25, text: `Z  max ${zMax.toFixed(1)} µm`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#555' } },
+      { x: 0, xref: 'paper', y: -0.15, text: `R  max ${rMax.toFixed(1)} µm`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#1f4e79' } },
+    ],
+  };
+  const el = document.getElementById('plot' + i);
+  Plotly.react(el, data, layout, { displayModeBar: false, edits: { shapePosition: true }, responsive: true });
+  if (!el._wired) {
+    el._wired = true;
+    el.on('plotly_relayout', ev => {                     // a pick line was dragged
+      let changed = false;
+      for (const [k, v] of Object.entries(ev)) {
+        const m = k.match(/^shapes\[(\d)\]\.x0$/);
+        if (m && m[1] === '0') { s.tP = v; changed = true; }
+        if (m && m[1] === '1') { s.tS = v; changed = true; }
+      }
+      if (changed) setTimeout(recompute, 0);
+    });
+  }
+}
+
+function drawTable() {
+  document.getElementById('sptable').innerHTML =
+    `<tr><th>Station</th><th>t<sub>P</sub> (s)</th><th>t<sub>S</sub> (s)</th><th>S − P (s)</th><th>Δ from S − P (°)</th><th>Δ (km)</th><th>Δ catalogue (°)</th></tr>` +
+    ST.map(s => {
+      const dc = gcDeg(EV.lat, EV.lon, s.lat, s.lon);
+      return `<tr style="${s.use ? '' : 'opacity:.4'}"><td>${s.net}.${s.sta}</td><td>${f1(s.tP)}</td><td>${f1(s.tS)}</td><td>${f1(s.sp)}</td>
+        <td class="${Math.abs(s.dsp - dc) > 1 ? 'bad' : ''}">${f2(s.dsp)}</td><td>${isFinite(s.dsp) ? (s.dsp * 111.2).toFixed(0) : '–'}</td><td>${f2(dc)}</td></tr>`;
+    }).join('') +
+    `<tr><td colspan="7" style="text-align:left;color:#667085;font-size:12px;white-space:normal">Red = more than 1° from the distance to the catalogue epicentre; usually a wrong S pick. Δ (km) = Δ (°) × 111.2.</td></tr>`;
+}
+
+function drawMap() {
+  const errKm = LOC ? gcDeg(LOC.lat, LOC.lon, EV.lat, EV.lon) * 111.2 : NaN;
+  document.getElementById('loccards').innerHTML = LOC ? `
+    <div class="card"><div class="k">Your epicentre</div><div class="v">${LOC.lat.toFixed(2)}°, ${LOC.lon.toFixed(2)}°</div><div class="d">${LOC.n} stations, misfit ${LOC.rms.toFixed(2)}°</div></div>
+    <div class="card"><div class="k">Catalogue epicentre (USGS)</div><div class="v">${EV.lat.toFixed(2)}°, ${EV.lon.toFixed(2)}°</div><div class="d">for comparison</div></div>
+    <div class="card"><div class="k">Difference</div><div class="v">${errKm.toFixed(0)} km</div><div class="d">origin time ${LOC.t0 >= 0 ? '+' : ''}${LOC.t0.toFixed(1)} s vs catalogue</div></div>`
+    : `<div class="card"><div class="k">Need at least 3 stations with P and S</div></div>`;
+  if (!map) {
+    map = L.map('map');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+  }
+  layers.forEach(l => map.removeLayer(l)); layers = [];
+  const add = l => { l.addTo(map); layers.push(l); return l; };
+  ST.forEach(s => {
+    if (s.use && isFinite(s.dsp)) add(L.circle([s.lat, s.lon], { radius: s.dsp * 111200, color: '#0f766e', weight: 1.5, fill: false }));
+    add(L.marker([s.lat, s.lon], { icon: L.divIcon({ className: '', html: `<div style="font:600 12px system-ui;color:${s.use ? '#0f766e' : '#999'};white-space:nowrap">▲ ${s.sta}</div>`, iconAnchor: [6, 8] }) }));
+  });
+  add(L.marker([EV.lat, EV.lon], { icon: L.divIcon({ className: '', html: '<div style="font-size:18px;color:#555">◆</div>', iconAnchor: [7, 12] }) }).bindTooltip('Catalogue (USGS)'));
+  if (LOC) add(L.marker([LOC.lat, LOC.lon], { icon: L.divIcon({ className: '', html: '<div style="font-size:26px;color:#c62828">★</div>', iconAnchor: [10, 18] }) }).bindTooltip('Your epicentre'));
+}
+
+function networkMags() {
+  const use = ST.filter(s => s.use);
+  return { mb: median(use.filter(s => isFinite(s.mb)).map(s => s.mb)), Ms: median(use.filter(s => isFinite(s.Ms)).map(s => s.Ms)) };
+}
+
+function drawMags() {
+  const { mb, Ms } = networkMags(), E = 10 ** (5.24 + 1.44 * Ms);
+  document.getElementById('magcards').innerHTML = `
+    <div class="card"><div class="k">mb (median)</div><div class="v">${f2(mb)}</div><div class="d">body-wave magnitude</div></div>
+    <div class="card"><div class="k">Ms (median)</div><div class="v">${f2(Ms)}</div><div class="d">surface-wave magnitude</div></div>
+    <div class="card"><div class="k">Catalogue (USGS)</div><div class="v">${EV.mag.toFixed(1)}</div><div class="d">${EV.magType}</div></div>
+    <div class="card"><div class="k">Energy from Ms</div><div class="v">${isFinite(E) ? E.toExponential(1).replace('e+', ' × 10^') : '–'} J</div><div class="d">≈ ${isFinite(Ms) ? (27.54 ** (Ms - 6)).toFixed(1) : '–'} Hiroshima bombs (M 6 = 1)</div></div>`;
+  const bad = (v, m) => isFinite(v) && Math.abs(v - m) > 1 ? 'bad' : '';
+  document.getElementById('magtable').innerHTML =
+    `<tr><th>Station</th><th>Δ (°)</th><th>P: A (µm)</th><th>T (s)</th><th>mb</th><th>Rayleigh: A (µm)</th><th>Ms</th></tr>` +
+    ST.map(s => `<tr style="${s.use ? '' : 'opacity:.4'}"><td>${s.net}.${s.sta}</td><td>${f2(s.dloc)}</td>
+      <td>${s.pw ? s.pw.A.toFixed(2) : '–'}</td><td>${s.pw ? s.pw.T.toFixed(1) : '–'}</td><td class="${bad(s.mb, mb)}">${f2(s.mb)}</td>
+      <td>${s.rw ? s.rw.A.toFixed(2) : '–'}</td><td class="${bad(s.Ms, Ms)}">${f2(s.Ms)}</td></tr>`).join('');
+  drawWork();
+}
+
+function drawWork() {
+  const s = ST[+document.getElementById('workSta').value || 0], out = document.getElementById('work');
+  if (!s || !s.pw || !s.rw) { out.textContent = 'Not enough data for this station.'; return; }
+  out.textContent =
+`Station ${s.net}.${s.sta}
+
+S − P = ${f1(s.tS)} − ${f1(s.tP)} = ${f1(s.sp)} s  →  Δ = ${f2(s.dsp)}° = ${(s.dsp * 111.2).toFixed(0)} km  (iasp91 table, h = ${EV.depth} km)
+Distance from your epicentre: Δ = ${f2(s.dloc)}°
+
+Body-wave magnitude  (P wave, vertical; red circles on the plot)
+  peak ${s.pw.va.toFixed(2)} µm at ${f1(s.pw.ta)} s, trough ${s.pw.vb.toFixed(2)} µm at ${f1(s.pw.tb)} s
+  A = ½ × |${s.pw.va.toFixed(2)} − (${s.pw.vb.toFixed(2)})| = ${s.pw.A.toFixed(2)} µm
+  T = 2 × (${f1(s.pw.tb)} − ${f1(s.pw.ta)}) = ${s.pw.T.toFixed(2)} s
+  mb = log A − log T + 0.01 Δ + 5.9
+     = ${log10(s.pw.A).toFixed(3)} − ${log10(s.pw.T).toFixed(3)} + ${(0.01 * s.dloc).toFixed(3)} + 5.9
+     = ${f2(s.mb)}
+
+Surface-wave magnitude  (Rayleigh wave, radial; blue circles on the plot)
+  A = ½ × |${s.rw.va.toFixed(2)} − (${s.rw.vb.toFixed(2)})| = ${s.rw.A.toFixed(2)} µm
+  Ms = log A + 1.66 log Δ + 2.0
+     = ${log10(s.rw.A).toFixed(3)} + 1.66 × ${log10(s.dloc).toFixed(3)} + 2.0
+     = ${f2(s.Ms)}
+
+Energy  E = 10^(5.24 + 1.44 Ms) J   (network Ms = ${f2(networkMags().Ms)})`;
+}
+
+// =================================================================== actions
+const $ = id => document.getElementById(id);
+const setStatus = (msg, cls = '') => { $('status').className = 'status ' + cls; $('status').innerHTML = msg; };
+
+function fillEvents(events) {
+  INIT.events = events;
+  $('ev').innerHTML = events.map((e, i) => `<option value="${i}">${e.time.slice(0, 16).replace('T', ' ')} UTC · ${e.name} · ${e.magType} ${(+e.mag).toFixed(1)}</option>`).join('');
+}
+
+async function getSeismograms() {
+  EV = INIT.events[+$('ev').value];
+  T = ttAtDepth(INIT.tt, EV.depth);
+  $('go').disabled = true; $('results').classList.add('hidden');
+  setStatus('Finding stations and downloading records from EarthScope… (about 10–30 s)');
+  try {
+    const res = await server('getSeismograms', EV);
+    setStatus(`Processing ${res.stations.length} stations…`);
+    await new Promise(r => setTimeout(r, 30));
+    const origin = Date.parse(EV.time), skipped = [...res.skipped];
+    ST = [];
+    for (const st of res.stations) {
+      try { ST.push(processStation(st, origin)); } catch (e) { skipped.push(`${st.net}.${st.sta}: ${e.message}`); }
+    }
+    if (!ST.length) { setStatus('No usable records for this earthquake. Try a larger search radius in the Settings sheet.', 'error'); return; }
+    setStatus(`<span class="ok">Got ${ST.length} stations and picked P and S automatically.</span>` +
+      (skipped.length ? ` <span title="${skipped.join('\n')}">Skipped ${skipped.length} (hover for why).</span>` : ''));
+    $('results').classList.remove('hidden');
+    $('workSta').innerHTML = ST.map((s, i) => `<option value="${i}">${s.net}.${s.sta}</option>`).join('');
+    buildTraces();
+    recompute();
+    map.fitBounds(L.latLngBounds(ST.map(s => [s.lat, s.lon]).concat([[EV.lat, EV.lon]])).pad(0.15));
+    $('saveMsg').textContent = '';
+  } catch (e) {
+    setStatus('Error: ' + (e.message || e), 'error');
+  } finally {
+    $('go').disabled = false;
+  }
+}
+
+async function searchUsgs() {
+  $('sRes').innerHTML = '<tr><td>Searching…</td></tr>';
+  try {
+    const list = await server('searchUsgs', { start: $('sStart').value, end: $('sEnd').value || new Date().toISOString().slice(0, 10),
+      minMag: $('sMag').value, lat: $('sLat').value, lon: $('sLon').value, radiusDeg: $('sRad').value });
+    $('sRes').innerHTML = list.length ? `<tr><th>Time (UTC)</th><th>Place</th><th>M</th><th>Depth</th><th></th></tr>` +
+      list.map((e, i) => `<tr><td>${e.time.slice(0, 16).replace('T', ' ')}</td><td style="text-align:left">${e.name}</td><td>${e.mag}</td><td>${e.depth.toFixed(0)} km</td>
+        <td><button class="small" data-i="${i}">Add</button></td></tr>`).join('') : '<tr><td>No earthquakes found.</td></tr>';
+    $('sRes').querySelectorAll('button').forEach(b => b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Adding…';
+      const e = list[+b.dataset.i];
+      fillEvents(await server('addEvent', e));
+      $('ev').value = INIT.events.findIndex(x => x.id === e.id);
+      b.textContent = 'Added';
+    });
+  } catch (e) { $('sRes').innerHTML = `<tr><td class="error">${e.message || e}</td></tr>`; }
+}
+
+async function save() {
+  if (!LOC) { $('saveMsg').textContent = 'Locate the earthquake first.'; return; }
+  if (!$('student').value.trim()) { $('saveMsg').textContent = 'Please type your name.'; return; }
+  const { mb, Ms } = networkMags(), use = ST.filter(s => s.use);
+  $('save').disabled = true; $('saveMsg').textContent = 'Saving…';
+  try {
+    const row = await server('saveResult', {
+      student: $('student').value.trim(), eventId: EV.id, eventName: EV.name,
+      lat: +LOC.lat.toFixed(3), lon: +LOC.lon.toFixed(3), errKm: +(gcDeg(LOC.lat, LOC.lon, EV.lat, EV.lon) * 111.2).toFixed(1),
+      nStations: use.length, mb: +mb.toFixed(2), Ms: +Ms.toFixed(2), catalogMag: EV.mag,
+      picks: use.map(s => ({ sta: `${s.net}.${s.sta}`, tP: +s.tP.toFixed(2), tS: +s.tS.toFixed(2) })),
+      stationMags: use.map(s => ({ sta: `${s.net}.${s.sta}`, mb: +f2(s.mb) || null, Ms: +f2(s.Ms) || null })),
+    });
+    $('saveMsg').innerHTML = `<span class="ok">Saved (row ${row} of the Results sheet).</span>`;
+  } catch (e) { $('saveMsg').innerHTML = `<span class="error">${e.message || e}</span>`; }
+  finally { $('save').disabled = false; }
+}
+
+$('go').onclick = getSeismograms;
+$('sGo').onclick = searchUsgs;
+$('save').onclick = save;
+$('workSta').onchange = drawWork;
+$('showTheory').onchange = () => ST.forEach(drawTrace);
+
+server('getInitData').then(d => { INIT = d; fillEvents(d.events); $('go').disabled = false; setStatus(''); })
+  .catch(e => setStatus('Could not load the sheet: ' + (e.message || e), 'error'));
+</script>
+</body>
+</html>
