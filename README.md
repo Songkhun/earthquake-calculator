@@ -60,6 +60,9 @@ Noise & Vibration), using five earthquakes that affected Thailand.
    - 0.05–2 Hz displacement in µm for the plots and amplitudes (as in the worksheet figures).
 4. S − P → Δ from the travel-time table (interpolated to the catalogue depth). A grid search finds the
    point whose distance to each station best matches its Δ (the "circles" method). Records that are clipped are left out.
+   Each seismogram has **Amplitude − +** and **Time − +** buttons; dragging across a plot zooms into
+   that time window and double-click (or **Fit**) shows the whole record again. Zoom only changes the
+   display: amplitudes and magnitudes always use the true values.
 5. mb = log A − log T + 0.01Δ + 5.9 (largest P swing on Z), Ms = log A + 1.66 log Δ + 2.0 (largest swing after S on the radial component), E = 10^(5.24 + 1.44 Ms) J. Network value = median of the stations.
 
 ## What to expect (tested on the five earthquakes, automatic picks only)

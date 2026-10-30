@@ -35,9 +35,11 @@
   th:first-child, td:first-child { text-align:left; }
   th { color:var(--muted); font-weight:600; font-size:12px; }
   td.bad { color:#b42318; font-weight:600; }
-  .trace { border:1px solid var(--line); border-radius:6px; margin-bottom:10px; }
-  .trace-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 10px; border-bottom:1px solid var(--line); font-size:14px; background:#fafbfc; border-radius:6px 6px 0 0; }
+  .station { border:1px solid var(--line); border-radius:6px; margin-bottom:10px; }
+  .station-head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:6px 10px; border-bottom:1px solid var(--line); font-size:14px; background:#fafbfc; border-radius:6px 6px 0 0; }
   .p { color:var(--p); font-weight:600; } .s { color:var(--s); font-weight:600; }
+  .zoom { font-size:13px; color:var(--muted); white-space:nowrap; }
+  .zoom button { min-width:26px; margin-left:2px; }
   #map { height:440px; border-radius:6px; }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:12px; }
   .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
@@ -440,15 +442,36 @@ function buildTraces() {
   box.innerHTML = '';
   ST.forEach((s, i) => {
     const d = document.createElement('div');
-    d.className = 'trace';
-    d.innerHTML = `<div class="trace-head"><span><label><input type="checkbox" ${s.use ? 'checked' : ''}> <b>${s.net}.${s.sta}</b></label>
+    d.className = 'station';
+    d.innerHTML = `<div class="station-head"><span><label><input type="checkbox" ${s.use ? 'checked' : ''}> <b>${s.net}.${s.sta}</b></label>
       &nbsp; <span class="p" id="pl${i}"></span> · <span class="s" id="sl${i}"></span> · S − P <b id="sp${i}"></b>
       ${s.note ? `&nbsp; <span class="error">${s.note}</span>` : ''}</span>
-      <button class="small">Reset picks</button></div><div id="plot${i}" style="height:230px"></div>`;
+      <span class="zoom">Amplitude <button class="small" data-z="a-">−</button><button class="small" data-z="a+">+</button>
+        &nbsp;Time <button class="small" data-z="t-">−</button><button class="small" data-z="t+">+</button>
+        <button class="small" data-z="fit">Fit</button> &nbsp;<button class="small" data-z="reset">Reset picks</button></span></div>
+      <div id="plot${i}" style="height:230px"></div>`;
     d.querySelector('input').onchange = e => { s.use = e.target.checked; recompute(); };
-    d.querySelector('button').onclick = () => { s.tP = s.auto.tP; s.tS = s.auto.tS; recompute(); };
+    d.querySelectorAll('[data-z]').forEach(b => b.onclick = () => zoom(s, b.dataset.z));
     box.appendChild(d);
   });
+}
+
+// Zoom: amplitude gain (×2 per click) and time window (×2 per click, around the middle of the view)
+function defaultRange(s) {
+  const t = s.trace.t;
+  return [-10, Math.min(t[t.length - 1], s.tS + 1.5 * (s.tS - s.tP) + 60)];
+}
+function zoom(s, how) {
+  if (how === 'reset') { s.tP = s.auto.tP; s.tS = s.auto.tS; recompute(); return; }
+  if (how === 'fit') { s.gain = 1; s.view = null; }
+  if (how === 'a+') s.gain = Math.min(64, (s.gain || 1) * 2);
+  if (how === 'a-') s.gain = Math.max(1 / 8, (s.gain || 1) / 2);
+  if (how === 't+' || how === 't-') {
+    const [a, b] = s.view || defaultRange(s), c = (a + b) / 2, w = (b - a) * (how === 't+' ? 0.25 : 1);
+    const t = s.trace.t;
+    s.view = [Math.max(t[0], c - w), Math.min(t[t.length - 1], c + w)];
+  }
+  drawTrace(s);
 }
 
 function drawTrace(s) {
@@ -459,6 +482,8 @@ function drawTrace(s) {
   const r = s.r || s.trace.n, t = Array.from(s.trace.t);
   let zMax = 0, rMax = 0;
   for (let k = 0; k < t.length; k++) { zMax = Math.max(zMax, Math.abs(s.trace.z[k])); rMax = Math.max(rMax, Math.abs(r[k])); }
+  const gain = s.gain || 1;
+  zMax /= gain; rMax /= gain;                             // larger gain = taller wiggles
   const data = [
     { x: t, y: Array.from(s.trace.z, v => v / zMax + 1.2), mode: 'lines', line: { color: '#111', width: 1 }, hoverinfo: 'skip' },
     { x: t, y: Array.from(r, v => v / rMax - 1.2), mode: 'lines', line: { color: '#1f4e79', width: 1 }, hoverinfo: 'skip' },
@@ -473,21 +498,24 @@ function drawTrace(s) {
     shapes.push(vline(tp, '#c62828', 'dot', false), vline(tp + sp, '#1565c0', 'dot', false));
   }
   const layout = {
-    margin: { l: 30, r: 10, t: 6, b: 34 }, showlegend: false, shapes, dragmode: false,
-    xaxis: { title: { text: 'time after origin (s)', font: { size: 11 } }, range: [-10, Math.min(t[t.length - 1], s.tS + 1.5 * (s.tS - s.tP) + 60)], gridcolor: '#eee' },
-    yaxis: { showticklabels: false, range: [-2.4, 2.4], zeroline: false, showgrid: false },
+    margin: { l: 30, r: 10, t: 6, b: 34 }, showlegend: false, shapes, dragmode: 'zoom',
+    xaxis: { title: { text: 'time after origin (s)  ·  drag across the plot to zoom, double-click to fit', font: { size: 11 } },
+             range: s.view || defaultRange(s), gridcolor: '#eee' },
+    yaxis: { showticklabels: false, range: [-2.4, 2.4], zeroline: false, showgrid: false, fixedrange: true },
     annotations: [
       { x: s.tP, y: 1, yref: 'paper', text: 'P', showarrow: false, font: { color: '#c62828', size: 13 }, xanchor: 'left', yanchor: 'top' },
       { x: s.tS, y: 1, yref: 'paper', text: 'S', showarrow: false, font: { color: '#1565c0', size: 13 }, xanchor: 'left', yanchor: 'top' },
-      { x: 0, xref: 'paper', y: 2.25, text: `Z  max ${zMax.toFixed(1)} µm`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#555' } },
-      { x: 0, xref: 'paper', y: -0.15, text: `R  max ${rMax.toFixed(1)} µm`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#1f4e79' } },
+      { x: 0, xref: 'paper', y: 2.25, text: `Z  max ${(zMax * gain).toFixed(1)} µm${gain !== 1 ? `  ·  amplitude ×${gain}` : ''}`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#555' } },
+      { x: 0, xref: 'paper', y: -0.15, text: `R  max ${(rMax * gain).toFixed(1)} µm`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#1f4e79' } },
     ],
   };
   const el = document.getElementById('plot' + i);
   Plotly.react(el, data, layout, { displayModeBar: false, edits: { shapePosition: true }, responsive: true });
   if (!el._wired) {
     el._wired = true;
-    el.on('plotly_relayout', ev => {                     // a pick line was dragged
+    el.on('plotly_relayout', ev => {                     // a pick line was dragged, or the time axis zoomed
+      if (ev['xaxis.range[0]'] !== undefined) s.view = [ev['xaxis.range[0]'], ev['xaxis.range[1]']];
+      if (ev['xaxis.autorange']) { s.view = null; s.gain = 1; setTimeout(() => drawTrace(s), 0); }
       let changed = false;
       for (const [k, v] of Object.entries(ev)) {
         const m = k.match(/^shapes\[(\d)\]\.x0$/);
