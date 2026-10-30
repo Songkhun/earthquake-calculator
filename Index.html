@@ -40,6 +40,8 @@
   .p { color:var(--p); font-weight:600; } .s { color:var(--s); font-weight:600; }
   .zoom { font-size:13px; color:var(--muted); white-space:nowrap; }
   .zoom button { min-width:26px; margin-left:2px; }
+  .zoom.show { flex-basis:100%; white-space:normal; }
+  .zoom select, .zoom input { font-size:12px; } .zoom input { width:58px; }
   #map { height:440px; border-radius:6px; }
   .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:12px; }
   .card { border:1px solid var(--line); border-radius:6px; padding:10px 12px; }
@@ -83,6 +85,8 @@
     <section>
       <h2><span class="n">2</span>Seismograms and automatic picks</h2>
       <p class="hint">Real broadband records from EarthScope (IRIS), converted to ground displacement in µm (0.05–2 Hz). Black = vertical (Z), blue = radial (R).
+        <b>P too small to see?</b> Choose <i>Velocity</i> with the <i>1–5 Hz</i> filter, or drag across the P wave to zoom: each plot scales to the largest wiggle in view.
+        <i>Raw counts</i> shows the record exactly as the instrument wrote it.
         The app picked <span class="p">P</span> and <span class="s">S</span> automatically. <b>If a pick looks wrong, drag its line</b>; everything below updates.
         Untick a station to leave it out.</p>
       <label class="hint"><input type="checkbox" id="showTheory"> Show iasp91 predicted arrivals (from the catalogue location) to check the picks</label>
@@ -414,7 +418,49 @@ function processStation(st, originMs) {
   return {
     net: st.net, sta: st.sta, lat: st.lat, lon: st.lon, use: !note, note, tP, tS, auto: { tP, tS },
     trace: { t: dec(t).map(v => v / 1e6), z: dec(bandpass(z, rate, db, true)), n: dec(bandpass(north, rate, db, true)), e: dec(bandpass(east, rate, db, true)) },
+    // full-rate records for the display options: counts as recorded, and ground velocity (m/s)
+    raw: { rate, t, cz: cut(ch[0]), ch: cut(ch[1]), hname: ch[1].cha, z, n: north, e: east },
+    show: { mode: 'disp', band: '0.05-2', lo: 0.05, hi: 2 },
   };
+}
+
+// What each plot shows (display only: magnitudes always use the 0.05–2 Hz displacement in s.trace)
+const BANDS = { off: null, '0.05-2': [0.05, 2], '0.5-2': [0.5, 2], '1-5': [1, 5], '2-8': [2, 8] };
+const demean = x => { let m = 0; for (const v of x) m += v; m /= x.length; return Float64Array.from(x, v => v - m); };
+function displayData(s) {
+  const o = s.show, key = [o.mode, o.band, o.lo, o.hi].join('|');
+  if (s.dc && s.dc.key === key) return s.dc;
+  const R = s.raw, nyq = R.rate / 2;
+  let band = o.band === 'custom' ? (o.lo > 0 && o.hi > o.lo ? [o.lo, o.hi] : null) : BANDS[o.band], text;
+  if (!band && o.mode === 'disp') { band = [0.01, nyq * 0.8]; text = 'no filter (0.01 Hz high-pass, needed to integrate)'; }
+  let corners = null;
+  if (band) {
+    const lo = band[0], hi = Math.min(band[1], nyq * 0.8);
+    corners = [lo * 0.6, lo, hi, Math.min(hi * 1.3, nyq * 0.95)];
+    text = text || `${+lo.toPrecision(3)}–${+hi.toPrecision(3)} Hz`;
+  }
+  text = text || 'no filter (mean removed)';
+  const k = o.mode === 'counts' ? 1 : 1e6;
+  const f = x => { const y = corners ? bandpass(x, R.rate, corners, o.mode === 'disp') : demean(x); return Float64Array.from(y, v => v * k); };
+  s.dc = o.mode === 'counts' ? { key, z: f(R.cz), n: f(R.ch), e: null, unit: 'counts', text }
+       : { key, z: f(R.z), n: f(R.n), e: f(R.e), unit: o.mode === 'disp' ? 'µm' : 'µm/s', text };
+  return s.dc;
+}
+// Keep at most ~2000 min/max pairs of the visible window, so peaks survive at any zoom
+function visible(t, ys, rate, [a, b]) {
+  const i0 = Math.max(0, Math.floor((a - t[0]) * rate)), i1 = Math.min(t.length, Math.ceil((b - t[0]) * rate) + 1);
+  const step = Math.max(1, Math.ceil((i1 - i0) / 2000)), x = [], out = ys.map(() => []), max = ys.map(() => 0);
+  for (let i = i0; i < i1; i += step) {
+    const j1 = Math.min(i1, i + step);
+    x.push(...(step === 1 ? [t[i]] : [t[i], t[Math.floor((i + j1) / 2)]]));
+    ys.forEach((y, c) => {
+      let lo = i, hi = i;
+      for (let j = i; j < j1; j++) { if (y[j] < y[lo]) lo = j; if (y[j] > y[hi]) hi = j; }
+      max[c] = Math.max(max[c], Math.abs(y[lo]), Math.abs(y[hi]));
+      out[c].push(...(step === 1 ? [y[i]] : lo < hi ? [y[lo], y[hi]] : [y[hi], y[lo]]));
+    });
+  }
+  return { x, ys: out, max };
 }
 
 // =================================================================== app state and drawing
@@ -448,10 +494,30 @@ function buildTraces() {
       ${s.note ? `&nbsp; <span class="error">${s.note}</span>` : ''}</span>
       <span class="zoom">Amplitude <button class="small" data-z="a-">−</button><button class="small" data-z="a+">+</button>
         &nbsp;Time <button class="small" data-z="t-">−</button><button class="small" data-z="t+">+</button>
-        <button class="small" data-z="fit">Fit</button> &nbsp;<button class="small" data-z="reset">Reset picks</button></span></div>
+        <button class="small" data-z="fit">Fit</button> &nbsp;<button class="small" data-z="reset">Reset picks</button></span>
+      <span class="zoom show">Show <select data-o="mode"><option value="disp">Displacement (µm)</option><option value="vel">Velocity (µm/s)</option><option value="counts">Raw counts</option></select>
+        &nbsp;Filter <select data-o="band"><option value="off">Off</option><option value="0.05-2">0.05–2 Hz (magnitude)</option><option value="1-5">1–5 Hz (P and S onsets)</option>
+          <option value="0.5-2">0.5–2 Hz</option><option value="2-8">2–8 Hz</option><option value="custom">Custom…</option></select>
+        <span data-o="custom" hidden><input type="number" data-o="lo" step="any" min="0" value="0.05"> – <input type="number" data-o="hi" step="any" min="0" value="2"> Hz</span>
+        &nbsp;<button class="small" data-o="all" title="Use this view on every station">Apply to all</button></span></div>
       <div id="plot${i}" style="height:230px"></div>`;
     d.querySelector('input').onchange = e => { s.use = e.target.checked; recompute(); };
     d.querySelectorAll('[data-z]').forEach(b => b.onclick = () => zoom(s, b.dataset.z));
+    const q = k => d.querySelector(`[data-o="${k}"]`);
+    s.syncShow = () => {
+      q('mode').value = s.show.mode; q('band').value = s.show.band;
+      q('custom').hidden = s.show.band !== 'custom'; q('lo').value = s.show.lo; q('hi').value = s.show.hi;
+    };
+    s.syncShow();
+    q('mode').onchange = e => {
+      s.show.mode = e.target.value;
+      if (s.show.mode === 'counts') s.show.band = 'off';    // raw = as recorded; choose a filter afterwards if wanted
+      s.syncShow(); drawTrace(s);
+    };
+    q('band').onchange = e => { s.show.band = e.target.value; s.syncShow(); drawTrace(s); };
+    q('lo').onchange = e => { s.show.lo = +e.target.value; drawTrace(s); };
+    q('hi').onchange = e => { s.show.hi = +e.target.value; drawTrace(s); };
+    q('all').onclick = () => ST.forEach(o => { if (o !== s) { o.show = { ...s.show }; o.syncShow(); drawTrace(o); } });
     box.appendChild(d);
   });
 }
@@ -479,18 +545,25 @@ function drawTrace(s) {
   document.getElementById('pl' + i).textContent = `P ${f1(s.tP)} s`;
   document.getElementById('sl' + i).textContent = `S ${f1(s.tS)} s`;
   document.getElementById('sp' + i).textContent = f1(s.sp) + ' s';
-  const r = s.r || s.trace.n, t = Array.from(s.trace.t);
-  let zMax = 0, rMax = 0;
-  for (let k = 0; k < t.length; k++) { zMax = Math.max(zMax, Math.abs(s.trace.z[k])); rMax = Math.max(rMax, Math.abs(r[k])); }
+  // Second trace: radial (rotated with the located, else the catalogue, epicentre); in counts the
+  // horizontal channel as recorded, because the two horizontals can have different gains
+  const D = displayData(s), view = s.view || defaultRange(s);
+  let h = D.n, hLabel = `${s.raw.hname} (not rotated)`;
+  if (D.e) {
+    const c = LOC || EV, baz = azimuth(s.lat, s.lon, c.lat, c.lon) * D2R, cb = Math.cos(baz), sb = Math.sin(baz);
+    h = D.n.map((v, k) => -v * cb - D.e[k] * sb); hLabel = 'R';
+  }
+  const V = visible(s.raw.t, [D.z, h], s.raw.rate, view);
   const gain = s.gain || 1;
-  zMax /= gain; rMax /= gain;                             // larger gain = taller wiggles
+  const zMax = (V.max[0] || 1) / gain, rMax = (V.max[1] || 1) / gain;   // scaled to the window; larger gain = taller wiggles
   const data = [
-    { x: t, y: Array.from(s.trace.z, v => v / zMax + 1.2), mode: 'lines', line: { color: '#111', width: 1 }, hoverinfo: 'skip' },
-    { x: t, y: Array.from(r, v => v / rMax - 1.2), mode: 'lines', line: { color: '#1f4e79', width: 1 }, hoverinfo: 'skip' },
+    { x: V.x, y: V.ys[0].map(v => v / zMax + 1.2), mode: 'lines', line: { color: '#111', width: 1 }, hoverinfo: 'skip' },
+    { x: V.x, y: V.ys[1].map(v => v / rMax - 1.2), mode: 'lines', line: { color: '#1f4e79', width: 1 }, hoverinfo: 'skip' },
   ];
   const mark = (w, off, max, col) => w && data.push({ x: [w.ta, w.tb], y: [w.va / max + off, w.vb / max + off], mode: 'markers',
     marker: { color: col, size: 7, symbol: 'circle-open', line: { width: 2 } }, hoverinfo: 'skip' });
-  mark(s.pw, 1.2, zMax, '#c62828'); mark(s.rw, -1.2, rMax, '#1565c0');
+  if (s.show.mode === 'disp' && s.show.band === '0.05-2') { mark(s.pw, 1.2, zMax, '#c62828'); mark(s.rw, -1.2, rMax, '#1565c0'); }
+  const amp = v => v >= 1e4 ? Math.round(v).toLocaleString() : +v.toPrecision(3);
   const vline = (x, color, dash, editable) => ({ type: 'line', x0: x, x1: x, y0: 0, y1: 1, yref: 'paper', line: { color, width: 2, dash }, editable });
   const shapes = [vline(s.tP, '#c62828', 'solid', true), vline(s.tS, '#1565c0', 'solid', true)];
   if (document.getElementById('showTheory').checked) {
@@ -500,13 +573,13 @@ function drawTrace(s) {
   const layout = {
     margin: { l: 30, r: 10, t: 6, b: 34 }, showlegend: false, shapes, dragmode: 'zoom',
     xaxis: { title: { text: 'time after origin (s)  ·  drag across the plot to zoom, double-click to fit', font: { size: 11 } },
-             range: s.view || defaultRange(s), gridcolor: '#eee' },
+             range: view, gridcolor: '#eee' },
     yaxis: { showticklabels: false, range: [-2.4, 2.4], zeroline: false, showgrid: false, fixedrange: true },
     annotations: [
-      { x: s.tP, y: 1, yref: 'paper', text: 'P', showarrow: false, font: { color: '#c62828', size: 13 }, xanchor: 'left', yanchor: 'top' },
-      { x: s.tS, y: 1, yref: 'paper', text: 'S', showarrow: false, font: { color: '#1565c0', size: 13 }, xanchor: 'left', yanchor: 'top' },
-      { x: 0, xref: 'paper', y: 2.25, text: `Z  max ${(zMax * gain).toFixed(1)} µm${gain !== 1 ? `  ·  amplitude ×${gain}` : ''}`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#555' } },
-      { x: 0, xref: 'paper', y: -0.15, text: `R  max ${(rMax * gain).toFixed(1)} µm`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#1f4e79' } },
+      { x: s.tP, y: 0, yref: 'paper', text: 'P', showarrow: false, font: { color: '#c62828', size: 13 }, xanchor: 'left', yanchor: 'bottom' },
+      { x: s.tS, y: 0, yref: 'paper', text: 'S', showarrow: false, font: { color: '#1565c0', size: 13 }, xanchor: 'left', yanchor: 'bottom' },
+      { x: 0, xref: 'paper', y: 2.25, text: `Z  max in view ${amp(zMax * gain)} ${D.unit}  ·  ${D.text}${gain !== 1 ? `  ·  amplitude ×${gain}` : ''}`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#555' } },
+      { x: 0, xref: 'paper', y: -0.15, text: `${hLabel}  max in view ${amp(rMax * gain)} ${D.unit}`, showarrow: false, xanchor: 'left', font: { size: 10, color: '#1f4e79' } },
     ],
   };
   const el = document.getElementById('plot' + i);
@@ -514,7 +587,10 @@ function drawTrace(s) {
   if (!el._wired) {
     el._wired = true;
     el.on('plotly_relayout', ev => {                     // a pick line was dragged, or the time axis zoomed
-      if (ev['xaxis.range[0]'] !== undefined) s.view = [ev['xaxis.range[0]'], ev['xaxis.range[1]']];
+      if (ev['xaxis.range[0]'] !== undefined) {           // redraw: re-sample and re-scale to the new window
+        s.view = [ev['xaxis.range[0]'], ev['xaxis.range[1]']];
+        setTimeout(() => drawTrace(s), 0);
+      }
       if (ev['xaxis.autorange']) { s.view = null; s.gain = 1; setTimeout(() => drawTrace(s), 0); }
       let changed = false;
       for (const [k, v] of Object.entries(ev)) {
